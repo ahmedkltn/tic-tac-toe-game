@@ -1,3 +1,5 @@
+import org.json.JSONObject;
+
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -8,7 +10,7 @@ import java.io.PrintWriter;
 import java.net.Socket;
 
 public class TicTacToeClient {
-    private static final String SERVER_ADDRESS = "localhost"; // Change to server IP if needed
+    private static final String SERVER_ADDRESS = "localhost";
     private static final int PORT = 12345;
 
     private JFrame frame;
@@ -16,9 +18,10 @@ public class TicTacToeClient {
     private JLabel messageLabel;
     private PrintWriter out;
     private BufferedReader in;
+    private boolean myTurn = false; // Track if it's this player's turn
 
     public TicTacToeClient() {
-        // Create GUI components
+        // Create GUI
         frame = new JFrame("Tic Tac Toe - Network Game");
         buttons = new JButton[3][3];
         messageLabel = new JLabel("Waiting for the server...", SwingConstants.CENTER);
@@ -34,7 +37,8 @@ public class TicTacToeClient {
             for (int col = 0; col < 3; col++) {
                 JButton button = new JButton("");
                 buttons[row][col] = button;
-                button.setFont(new Font("Arial", Font.BOLD, 40));
+                button.setFont(new Font("Arial", Font.BOLD, 50));
+                button.setEnabled(false); // Initially disable all buttons
                 boardPanel.add(button);
 
                 final int r = row;
@@ -43,7 +47,11 @@ public class TicTacToeClient {
                 button.addActionListener(new ActionListener() {
                     @Override
                     public void actionPerformed(ActionEvent e) {
-                        handleMove(r, c);
+                        if (myTurn) { // Only allow move when it's this player's turn
+                            handleMove(r, c);
+                        } else {
+                            JOptionPane.showMessageDialog(frame, "It's not your turn!", "Wait", JOptionPane.WARNING_MESSAGE);
+                        }
                     }
                 });
             }
@@ -64,7 +72,7 @@ public class TicTacToeClient {
             out = new PrintWriter(socket.getOutputStream(), true);
 
             // Start listening to server messages in a separate thread
-            new Thread(() -> listenToServer()).start();
+            new Thread(this::listenToServer).start();
         } catch (Exception e) {
             messageLabel.setText("Error: Cannot connect to server!");
             e.printStackTrace();
@@ -72,22 +80,52 @@ public class TicTacToeClient {
     }
 
     private void handleMove(int row, int col) {
+        if (!buttons[row][col].getText().isEmpty()) {
+            JOptionPane.showMessageDialog(frame, "Invalid move! This spot is taken.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
         out.println((row + 1) + " " + (col + 1)); // Send move to server
+        myTurn = false; // Disable move until the server confirms
+        disableBoard(); // Prevent further clicks until the turn is updated
     }
 
     private void listenToServer() {
         try {
             String response;
             while ((response = in.readLine()) != null) {
-                if (response.contains("Your turn")) {
-                    messageLabel.setText("Your turn!");
-                } else if (response.contains("wins") || response.contains("draw")) {
-                    messageLabel.setText(response);
-                    disableBoard();
-                } else if (response.startsWith("\n  ")) {
-                    updateBoard(response);
-                } else {
-                    messageLabel.setText(response);
+                System.out.println("Received from server: " + response); // Debugging
+
+                JSONObject json = new JSONObject(response);
+                String type = json.getString("type");
+
+                switch (type) {
+                    case "BOARD_UPDATE":
+                        updateBoard(json);
+                        break;
+                    case "GAME_MESSAGE":
+                        String msg = json.getString("message");
+                        messageLabel.setText(msg);
+                        if (msg.startsWith("Your turn")) {
+                            myTurn = true;  // Allow this player to move
+                            enableBoard();  // Enable buttons
+                        } else {
+                            myTurn = false;
+                            disableBoard();
+                        }
+                        break;
+                    case "WAIT":
+                        messageLabel.setText(json.getString("message"));
+                        myTurn = false;
+                        disableBoard();
+                        break;
+                    case "GAME_RESULT":
+                        messageLabel.setText(json.getString("message"));
+                        disableBoard();
+                        break;
+                    case "ERROR":
+                        JOptionPane.showMessageDialog(frame, json.getString("message"), "Error", JOptionPane.ERROR_MESSAGE);
+                        break;
                 }
             }
         } catch (Exception e) {
@@ -96,26 +134,41 @@ public class TicTacToeClient {
         }
     }
 
-    private void updateBoard(String boardState) {
-        String[] rows = boardState.split("\n");
-        for (int i = 1; i <= 3; i++) {
-            String[] cells = rows[i].substring(2).split("\\|");
-            for (int j = 0; j < 3; j++) {
-                String cellText = cells[j].trim();
-                if (!cellText.equals("")) {
-                    buttons[i - 1][j].setText(cellText);
-                    buttons[i - 1][j].setEnabled(false);
+    private void updateBoard(JSONObject json) {
+        SwingUtilities.invokeLater(() -> {
+            String[][] board = new String[3][3];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    board[i][j] = json.getJSONArray("board").getJSONArray(i).getString(j);
+                    if (!board[i][j].equals(" ") && !buttons[i][j].getText().equals(board[i][j])) {
+                        buttons[i][j].setText(board[i][j]);
+                        buttons[i][j].setEnabled(false);
+                    }
                 }
             }
-        }
+        });
     }
 
     private void disableBoard() {
-        for (JButton[] row : buttons) {
-            for (JButton button : row) {
-                button.setEnabled(false);
+        SwingUtilities.invokeLater(() -> {
+            for (JButton[] row : buttons) {
+                for (JButton button : row) {
+                    button.setEnabled(false);
+                }
             }
-        }
+        });
+    }
+
+    private void enableBoard() {
+        SwingUtilities.invokeLater(() -> {
+            for (JButton[] row : buttons) {
+                for (JButton button : row) {
+                    if (button.getText().isEmpty()) {
+                        button.setEnabled(true);
+                    }
+                }
+            }
+        });
     }
 
     public static void main(String[] args) {

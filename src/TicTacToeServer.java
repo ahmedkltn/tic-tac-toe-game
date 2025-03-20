@@ -1,9 +1,10 @@
 import java.io.*;
 import java.net.*;
+import org.json.JSONObject;
 
 public class TicTacToeServer {
     private static final int PORT = 12345;
-    private static char[][] board = {
+    private static final char[][] board = {
             {' ', ' ', ' '},
             {' ', ' ', ' '},
             {' ', ' ', ' '}
@@ -18,50 +19,98 @@ public class TicTacToeServer {
             // Accept Player X
             Socket playerXSocket = serverSocket.accept();
             playerX = new PrintWriter(playerXSocket.getOutputStream(), true);
-            playerX.println("You are Player X. Waiting for Player O...");
+
+            // Send JSON message to Player X
+            JSONObject msgX = new JSONObject();
+            msgX.put("type", "GAME_MESSAGE");
+            msgX.put("message", "You are Player X. Waiting for Player O...");
+            playerX.println(msgX);
+            playerX.flush();
 
             // Accept Player O
             Socket playerOSocket = serverSocket.accept();
             playerO = new PrintWriter(playerOSocket.getOutputStream(), true);
-            playerX.println("Player O has joined!");
-            playerO.println("You are Player O. Game is starting!");
+
+            // Send JSON message to both players
+            playerX.println(new JSONObject().put("type", "GAME_MESSAGE").put("message", "Player O has joined!"));
+            playerX.flush();
+            playerO.println(new JSONObject().put("type", "GAME_MESSAGE").put("message", "You are Player O. Game is starting!"));
+            playerO.flush();
 
             BufferedReader inputX = new BufferedReader(new InputStreamReader(playerXSocket.getInputStream()));
             BufferedReader inputO = new BufferedReader(new InputStreamReader(playerOSocket.getInputStream()));
 
             // Game loop
             while (true) {
-                sendBoard();
+                sendBoard(); // Send board update to both players
+
                 PrintWriter currentWriter = (currentPlayer == 'X') ? playerX : playerO;
+                PrintWriter waitingPlayer = (currentPlayer == 'X') ? playerO : playerX;
                 BufferedReader currentInput = (currentPlayer == 'X') ? inputX : inputO;
 
-                currentWriter.println("Your turn. Enter row and column (1-3 1-3): ");
-                String move = currentInput.readLine();
+                // Notify only the current player
+                JSONObject turnMsg = new JSONObject();
+                turnMsg.put("type", "GAME_MESSAGE");
+                turnMsg.put("message", "Your turn (Player " + currentPlayer + ")");
+                currentWriter.println(turnMsg);
+                currentWriter.flush();
 
+                // Notify the other player to wait
+                JSONObject waitMsg = new JSONObject();
+                waitMsg.put("type", "WAIT");
+                waitMsg.put("message", "Waiting for Player " + currentPlayer + " to play...");
+                waitingPlayer.println(waitMsg);
+                waitingPlayer.flush();
+
+                String move = currentInput.readLine();
                 if (move == null) break; // Handle disconnection
 
                 String[] parts = move.split(" ");
-                int row = Integer.parseInt(parts[0]) - 1;
-                int col = Integer.parseInt(parts[1]) - 1;
-
-                if (board[row][col] == ' ') {
-                    board[row][col] = currentPlayer;
-                    if (checkWin(currentPlayer)) {
-                        sendBoard();
-                        playerX.println("Player " + currentPlayer + " wins! 🎉");
-                        playerO.println("Player " + currentPlayer + " wins! 🎉");
-                        break;
-                    }
-                    if (isDraw()) {
-                        sendBoard();
-                        playerX.println("It's a draw! 🤝");
-                        playerO.println("It's a draw! 🤝");
-                        break;
-                    }
-                    currentPlayer = (currentPlayer == 'X') ? 'O' : 'X';
-                } else {
-                    currentWriter.println("Invalid move. Try again.");
+                if (parts.length != 2) {
+                    currentWriter.println(new JSONObject().put("type", "ERROR").put("message", "Invalid move format. Use: row column (e.g., 2 3)"));
+                    currentWriter.flush();
+                    continue;
                 }
+
+                int row, col;
+                try {
+                    row = Integer.parseInt(parts[0]) - 1;
+                    col = Integer.parseInt(parts[1]) - 1;
+                } catch (NumberFormatException e) {
+                    currentWriter.println(new JSONObject().put("type", "ERROR").put("message", "Invalid move format. Use numbers (e.g., 2 3)"));
+                    currentWriter.flush();
+                    continue;
+                }
+
+                if (row < 0 || row > 2 || col < 0 || col > 2 || board[row][col] != ' ') {
+                    currentWriter.println(new JSONObject().put("type", "ERROR").put("message", "Invalid move. Try again."));
+                    currentWriter.flush();
+                    continue;
+                }
+
+                board[row][col] = currentPlayer;
+
+                if (checkWin(currentPlayer)) {
+                    sendBoard();
+                    JSONObject winMsg = new JSONObject().put("type", "GAME_RESULT").put("message", "Player " + currentPlayer + " wins! 🎉");
+                    playerX.println(winMsg);
+                    playerO.println(winMsg);
+                    playerX.flush();
+                    playerO.flush();
+                    break;
+                }
+                if (isDraw()) {
+                    sendBoard();
+                    JSONObject drawMsg = new JSONObject().put("type", "GAME_RESULT").put("message", "It's a draw! 🤝");
+                    playerX.println(drawMsg);
+                    playerO.println(drawMsg);
+                    playerX.flush();
+                    playerO.flush();
+                    break;
+                }
+
+                // Switch player turn
+                currentPlayer = (currentPlayer == 'X') ? 'O' : 'X';
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -69,17 +118,23 @@ public class TicTacToeServer {
     }
 
     private static void sendBoard() {
-        StringBuilder sb = new StringBuilder("\n  1 2 3\n");
+        JSONObject boardUpdate = new JSONObject();
+        boardUpdate.put("type", "BOARD_UPDATE");
+
+        // Convert board to JSON array
+        String[][] boardArray = new String[3][3];
         for (int i = 0; i < 3; i++) {
-            sb.append((i + 1) + " ");
             for (int j = 0; j < 3; j++) {
-                sb.append(board[i][j] + (j < 2 ? "|" : ""));
+                boardArray[i][j] = String.valueOf(board[i][j]);
             }
-            sb.append("\n");
-            if (i < 2) sb.append("  -----\n");
         }
-        playerX.println(sb.toString());
-        playerO.println(sb.toString());
+        boardUpdate.put("board", boardArray);
+
+        // Send to players
+        playerX.println(boardUpdate);
+        playerO.println(boardUpdate);
+        playerX.flush();
+        playerO.flush();
     }
 
     private static boolean checkWin(char player) {
